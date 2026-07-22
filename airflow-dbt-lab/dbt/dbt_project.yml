@@ -1,0 +1,16 @@
+name: 'lab'
+version: '1.0.0'
+profile: 'lab'
+
+model-paths: ['models']
+seed-paths: ['seeds']
+test-paths: ['tests']
+target-path: 'target'
+clean-targets: ['target', 'dbt_packages']
+
+models:
+  lab:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

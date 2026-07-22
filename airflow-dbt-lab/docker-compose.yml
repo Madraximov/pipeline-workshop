@@ -1,0 +1,119 @@
+# We reuse this block across three services instead of copy-pasting.
+# The &airflow-common is a YAML anchor; <<: *airflow-common below is a merge.
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  environment:
+    # Which executor strategy. LocalExecutor = tasks as subprocesses, no broker.
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    # Where Airflow keeps its own state. Note the hostname `airflow-meta` —
+    # that's the *service name* below. Docker's internal DNS resolves it.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-meta:5432/airflow
+
+    # Don't clutter the UI with 50 tutorial DAGs.
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    # Encrypts connection passwords stored in the metadata DB.
+    # Generate a real one later; this placeholder works for a lab.
+    AIRFLOW__CORE__FERNET_KEY: ""
+
+    # Airflow 3: tasks call back into the API server to report state.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+
+    # Signs the JWTs used for that callback. Any string, same across services.
+    AIRFLOW__API_AUTH__JWT_SECRET: lab-secret-change-me
+
+    # Lab-only: skip the login screen entirely.
+    # NOTE: section is [core], not [simple_auth_manager] — corrected from earlier.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+  volumes:
+    # host path : container path. Edits on your machine appear instantly inside.
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./dbt:/opt/airflow/dbt
+    - /var/run/docker.sock:/var/run/docker.sock
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-meta:
+      condition: service_healthy
+
+services:
+  # ---- Airflow's own database ----
+  airflow-meta:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      # Named volume = data survives `docker compose down`.
+      - airflow-meta-data:/var/lib/postgresql/data
+    healthcheck:
+      # Other services wait on this before starting.
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 10
+
+  # ---- Our "data warehouse" ----
+  warehouse:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dbt
+      POSTGRES_PASSWORD: dbt
+      POSTGRES_DB: warehouse
+    ports:
+      # host:container — so you can connect from DBeaver on localhost:55432.
+      # Not 5432, to avoid clashing with any Postgres already on your machine.
+      - "55432:5432"
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "dbt"]
+      interval: 5s
+      retries: 10
+
+  # ---- dbt: separate image, separate dependency tree ----
+  dbt:
+    build:
+      context: .
+      dockerfile: Dockerfile.dbt
+    volumes:
+      # Same ./dbt folder the Airflow containers mount — one source of truth.
+      - ./dbt:/dbt
+    # Containers exit when their main process ends. dbt is a CLI, not a
+    # daemon, so we idle it and `docker compose exec` in on demand.
+    command: sleep infinity
+    depends_on:
+      warehouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---- One-shot: create tables in the metadata DB, then exit ----
+  airflow-init:
+    <<: *airflow-common
+    command: db migrate
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: unless-stopped
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    restart: unless-stopped
+
+volumes:
+  airflow-meta-data:
+  warehouse-data:

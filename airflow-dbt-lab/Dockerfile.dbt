@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pin dbt-core to 1.9.x. Without the upper bound, pip pulls dbt-core 1.12+,
+# which downloads a wheel from GitHub at build time and fails behind
+# TLS-inspecting networks. 1.9.x installs entirely from PyPI.
+RUN pip install --no-cache-dir "dbt-postgres==1.9.0" "dbt-core>=1.9,<1.10"
+
+ENV DBT_PROFILES_DIR=/dbt
+
+WORKDIR /dbt
